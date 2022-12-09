@@ -13,6 +13,7 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold
 
 from modules.base.dataset import AccidentSeverityDataset
 
@@ -26,33 +27,19 @@ class AccidentSeverityModelTrainer():
         self.model_type = model_type
         self.input_dim = input_dim
         self.output_dim = output_dim
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        self.device = 'cpu'
-
         X_training = df_train.drop(columns=['Accident_severity']).values
         y_training = AccidentSeverityModelTrainer._one_hot_encoding(df_train['Accident_severity'].values)
 
-        X_training = torch.tensor(X_training).float().to(self.device)
-        y_training = torch.tensor(y_training).float().to(self.device)
+        self.x_train = X_training
+        self.y_train = y_training
 
-        train_dataset = AccidentSeverityDataset(X_training, y_training)
+        X_test = df_test.drop(columns=['Accident_severity']).values
+        y_test = AccidentSeverityModelTrainer._one_hot_encoding(df_test['Accident_severity'].values)
 
-        X_validation = df_test.drop(columns=['Accident_severity']).values
-        y_validation = AccidentSeverityModelTrainer._one_hot_encoding(df_test['Accident_severity'].values)
-
-        self.y_test = y_validation
-
-        X_validation = torch.tensor(X_validation).float().to(self.device)
-        y_validation = torch.tensor(y_validation).float().to(self.device)
-
-        self.x_test = X_validation
-
-        self.train_loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            drop_last=False
-        )
+        self.x_test = X_test
+        self.y_test = y_test
 
     @staticmethod
     def _one_hot_encoding(nd_array):
@@ -77,43 +64,70 @@ class AccidentSeverityModelTrainer():
         return one_hot_encoding_predictions
 
 
-    def train_new_model(self, epochs=10):
-        model = self.model_type(self.input_dim, self.output_dim)
+    def train_new_model(self, epochs=10, model=None):
+        splits = StratifiedKFold(5, shuffle=True, random_state=42)
 
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-        criterion = nn.CrossEntropyLoss().to(self.device)
+        results = dict()
+        ds = AccidentSeverityDataset(self.x_train, self.y_train)
 
-        for epoch in range(epochs):
-            # Training Step
-            losses = []
-            accuracies = []
-            roc_auc = []
-            for batch_idx, (data, targets) in enumerate(self.train_loader):
-                data = data.to(self.device)
-                targets = targets.to(self.device)
+        for fold, (train_idx, val_idx) in enumerate(splits.split(np.arange(len(ds)), np.argmax(self.y_train, axis=1))):
+            X_train = self.x_train[train_idx]
+            y_train = self.y_train[train_idx]
 
-                predictions = model.forward(data)
-                loss = criterion(predictions, targets)
+            X_val = self.x_train[val_idx]
+            y_val = self.y_train[val_idx]
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+            X_train = torch.tensor(X_train).float().to(self.device)
+            y_train = torch.tensor(y_train).float().to(self.device)
 
-                prob_pred = model.forward(self.x_test).detach().cpu().numpy()
-                det_pred = AccidentSeverityModelTrainer._convert_prob_to_deterministic(
-                    prob_pred
-                )
+            X_val = torch.tensor(X_val).float().to(self.device)
 
-                losses.append(loss.item())
-                accuracies.append(accuracy_score(self.y_test, det_pred))
-                roc_auc.append(roc_auc_score(self.y_test, prob_pred))
+            curr_ds = AccidentSeverityDataset(X_train, y_train)
+            curr_tl = DataLoader(curr_ds, batch_size=5, shuffle=False, drop_last=False)
 
-                avg_loss = sum(losses) / len(losses)
-                avg_acc = sum(accuracies) / len(accuracies)
-                avg_ra = sum(roc_auc) / len(roc_auc)
+            model = self.model_type(self.input_dim, self.output_dim).to(self.device)
 
-                print(f'Epoch: {epoch+1}\t-\tLoss: {avg_loss:.4f}\t-\tAccuracy: {avg_acc:.4f}\t-\tROC-AUC: {avg_ra:.4f}', end='\r')
-            
+            optimizer = optim.Adam(model.parameters(), lr=0.001)
+            criterion = nn.CrossEntropyLoss().to(self.device)
 
-        return model
+            for epoch in range(epochs):
+                # Training Step
+                losses = []
+                accuracies = []
+                roc_auc = []
+                for batch_idx, (data, targets) in enumerate(curr_tl):
+                    data = data.to(self.device)
+                    targets = targets.to(self.device)
+
+                    predictions = model.forward(data)
+                    loss = criterion(predictions, targets)
+
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+
+                    prob_pred = model.forward(X_val).detach().cpu().numpy()
+                    det_pred = AccidentSeverityModelTrainer._convert_prob_to_deterministic(
+                        prob_pred
+                    )
+
+                    losses.append(loss.item())
+                    accuracies.append(accuracy_score(y_val, det_pred))
+                    roc_auc.append(roc_auc_score(y_val, prob_pred))
+
+                    avg_loss = sum(losses) / len(losses)
+                    avg_acc = sum(accuracies) / len(accuracies)
+                    avg_ra = sum(roc_auc) / len(roc_auc)
+
+                    print(f'Fold: {fold+1}\t-\tEpoch: {epoch+1}\t-\tLoss: {avg_loss:.4f}\t-\tAccuracy: {avg_acc:.4f}\t-\tROC-AUC: {avg_ra:.4f}', end='\r')
+
+            results[fold] = dict(
+                avg_loss=avg_loss,
+                avg_acc=avg_acc,
+                avg_ra=avg_ra
+            )
+
+            print()
+
+        return model, results
 

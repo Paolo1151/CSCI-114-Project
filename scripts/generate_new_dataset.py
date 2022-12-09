@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import sys
 sys.path.append('..')
@@ -59,17 +60,32 @@ file_raw_data['Pedestrian_movement'] = file_raw_data['Pedestrian_movement'].repl
 file_raw_data['Pedestrian_movement'] = file_raw_data['Pedestrian_movement'].replace(['Walking along in carriageway, facing traffic'], 'Walking along in carriageway with traffic')
 
 df = pd.get_dummies(file_raw_data ,columns = file_raw_data.columns.difference(['Accident_severity']))
-
 df = df.reset_index().drop(['index'], axis=1)
 
+impt_features = ['Accident_severity',
+ 'Cause_of_accident_Moving Backward',
+ 'Cause_of_accident_No distancing',
+ 'Driving_experience_2-5yr',
+ 'Driving_experience_No Licence',
+ 'Light_conditions_Darkness',
+ 'Road_surface_type_Gravel roads',
+ 'Types_of_Junction_Crossing',
+ 'Types_of_Junction_No junction',
+ 'Vehicle_driver_relation_Owner',
+ 'Vehicle_movement_Overtaking',
+ 'Weather_conditions_Other']
+
+df = df[impt_features]
 
 training = partition_dataset(df)
+
+training.to_csv(os.path.join(cfg.DATA_PATH, 'cleaned_full.csv'), index=False)
 
 X = training.drop(columns=['Accident_severity'])
 y = training['Accident_severity']
 
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.30, random_state=42, stratify=y)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
 
 df_train = X_train.copy()
 df_train['Accident_severity'] = y_train
